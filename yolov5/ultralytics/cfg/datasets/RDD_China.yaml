@@ -1,0 +1,14 @@
+# RDD_China 数据集配置（中国全部两个来源：China_Drone 无人机 + China_MotorBike 摩托车/电动车）
+# 由 generate_rdd_china.py 生成：零切框裁剪为 高384 x 宽512（4:3），多窗口采样
+# train : val : test = 8 : 1 : 1（每个来源各自按帧号连续分块划分，避免相邻视频帧泄漏）
+# 类别合并：原始 RDD2022 编号 0(纵向裂纹) + 1(横向裂纹) → 0 裂纹；2(龟裂) → 1；4(坑洞) → 2
+# 所有标注框均完整落在裁剪图内（零切框），标签为连续编号 0/1/2
+path: D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_China
+train: D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_China\train
+val: D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_China\val
+test: D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_China\test
+
+names:
+  0: crack
+  1: alligator crack
+  2: pothole

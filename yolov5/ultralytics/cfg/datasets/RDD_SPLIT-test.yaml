@@ -1,0 +1,16 @@
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+path: D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_SPLIT
+train: # train images (relative to 'path') 
+  - D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_SPLIT\train
+val: # val images (relative to 'path')  
+  - D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_SPLIT\val
+test: # test images (optional)
+  - D:\02_workspace\05_ascend_projects\yolo_pavement\dataset\RDD_SPLIT\test
+
+# Classes
+names:
+  0: longitudinal crack  # 纵向裂缝
+  1: transverse crack  # 横向裂缝
+  2: alligator crack  # 龟裂/鳄鱼纹裂缝
+  3: other corrosion  # 其他腐蚀/破损
+  4: pothole  # 坑洞
