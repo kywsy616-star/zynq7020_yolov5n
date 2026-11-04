@@ -1,0 +1,5 @@
+R6.5 LUT-fit candidate
+
+This candidate remains isolated from the active R6.4 source. To fit the XC7Z020 HLS resource budget, the R6.5 paired-KX MAC was changed to sequential KX processing, the output-channel loop uses a single shared lane, and the hardware tile parallelism is reduced to HW_CO=8 and HW_NX=8 (HW_CI remains 4). The design now estimates 50,373 LUT (94%), 103 DSP (46%), 152 BRAM (54%), and 53,594 FF (50%). HLS C simulation passes all 24 scalar reference cases with zero errors. Full report: `submission_2026/evidence/hls_r6_5_lutfit_csynth.rpt`.
+
+This is an HLS resource fit only. The report still says loop constraints were not all met, and LUT headroom is about 6%; Vivado synthesis/implementation, timing closure, generated IP integration, and board validation are still required before importing or programming it. The candidate source has no ILA instantiation; `profile_event` is an optional phase-event output, not an ILA core.

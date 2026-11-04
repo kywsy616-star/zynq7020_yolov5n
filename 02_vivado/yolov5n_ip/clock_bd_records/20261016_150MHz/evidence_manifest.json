@@ -1,0 +1,95 @@
+{
+  "generatedAt": "2026-10-16T12:02:33.687Z",
+  "files": [
+    {
+      "path": "clock_bd_records/20261016_150MHz/after_properties.txt",
+      "bytes": 12740,
+      "sha256": "0febd68b0b07e2a751f87e375c637b362b15cb69b9daec6fcb643ad1db489c0d"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/after_zynq.bd",
+      "bytes": 99208,
+      "sha256": "93518c4e7fc77b49d8cfde3390042059bd9d6b581589d7ecfbd455376119e14a"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/after_zynq.tcl",
+      "bytes": 55380,
+      "sha256": "81053a65433adc0399f0b06d7f80198dfb11b978467af2be379b0e2a973b2e92"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/apply_hls_150mhz_bd.tcl",
+      "bytes": 4594,
+      "sha256": "aab41af70bbcf841886e7f606a6563ee093593d90f28d200d22d0a6ec7fac558"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/before_properties.txt",
+      "bytes": 3106,
+      "sha256": "e521af612510c731b8c1cca40a276a5046f2a584a2f3d7f16fa8b30e49fa6adf"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/before_yolov5n_ip.xpr",
+      "bytes": 14248,
+      "sha256": "925621d2ada3a4ba957ddf4502f84694a05e6bc8123d4e732d5038bac4b6782d"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/before_zynq.bd",
+      "bytes": 92181,
+      "sha256": "5ecccd64caf47f5c76406d15df9968d2916379425bce8fdd9d9256e4e06ab1ea"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/before_zynq.tcl",
+      "bytes": 52913,
+      "sha256": "6439d8ea96b2d3e2d76f10a5a56adf2416d987e2c704d984875e8fde48d3df29"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/connection_audit.json",
+      "bytes": 4834,
+      "sha256": "0df48506a5012f9455c9b9de8fc637a6cc4f536fbe256ed5c12558834a5bca0f"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/first_after_properties.txt",
+      "bytes": 12740,
+      "sha256": "0febd68b0b07e2a751f87e375c637b362b15cb69b9daec6fcb643ad1db489c0d"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/first_validate_design.log",
+      "bytes": 130,
+      "sha256": "032b790812f48ac6cd381459f2ac216b140c7ab5d1fb4e60a8caf7d22523e241"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/inspect_clock_bd.tcl",
+      "bytes": 1700,
+      "sha256": "cc092c5e2020eca598a5854f744e72c3078fa148ff43bd17aab3aa81bd091772"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/validate_console_excerpt.log",
+      "bytes": 3999,
+      "sha256": "01b073d02a4868ca0c2c6688e8a7a993a4d63d5c5320d41f1703daee4f21059a"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/validate_design.log",
+      "bytes": 130,
+      "sha256": "81c91e742238954dc83d8afe66e5a517776481acee80fca00d5a38ae486aee1d"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/validate_hls_150mhz_bd.tcl",
+      "bytes": 2565,
+      "sha256": "d822ffb221f45564e9187d2e8e12ed5f176e62943d818b6c009fa773e3d41890"
+    },
+    {
+      "path": "clock_bd_records/20261016_150MHz/verify_clock_bd.js",
+      "bytes": 8943,
+      "sha256": "ed88591ee6ada6c1d32a72c80867e8b812f6d339eab2be7894c9db0315f1c7ea"
+    },
+    {
+      "path": "yolov5n_ip.srcs/sources_1/bd/zynq/zynq.bd",
+      "bytes": 99208,
+      "sha256": "93518c4e7fc77b49d8cfde3390042059bd9d6b581589d7ecfbd455376119e14a"
+    },
+    {
+      "path": "BD_HLS时钟与跨时钟接线记录_20261016.md",
+      "bytes": 12387,
+      "sha256": "a5390d00c7e8198a9782770b10d766e3a64f2dc887713b3377ff04d654411630"
+    }
+  ]
+}

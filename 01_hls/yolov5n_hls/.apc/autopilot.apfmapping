@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<autopilotfilemapping:AutoPilotFileMapping xmlns:autopilotfilemapping="www.autoesl.com/autopilotfilemapping">
+  <source>
+    <originFiles name="yolov5n_top.cpp" path="D:\02_workspace\02_vitis_projects\yolov5\yolov5n_speed_prj\yolov5n_speed_prj\01_hls\src\yolov5n_top.cpp"/>
+    <originFiles name="yolov5n_r6_5_schedule.h" path="D:\02_workspace\02_vitis_projects\yolov5\yolov5n_speed_prj\yolov5n_speed_prj\01_hls\src\yolov5n_r6_5_schedule.h"/>
+    <originFiles name="yolov5n_hls.h" path="D:\02_workspace\02_vitis_projects\yolov5\yolov5n_speed_prj\yolov5n_speed_prj\01_hls\src\yolov5n_hls.h"/>
+    <originFiles name="axi64_native_io.h" path="D:\02_workspace\02_vitis_projects\yolov5\yolov5n_speed_prj\yolov5n_speed_prj\01_hls\src\axi64_native_io.h"/>
+  </source>
+  <testbench>
+    <originFiles name="tb_yolov5n_r6_4.cpp" path="D:\02_workspace\02_vitis_projects\yolov5\yolov5n_speed_prj\yolov5n_speed_prj\01_hls\src\tb_yolov5n_r6_4.cpp"/>
+    <originFiles name="tb_r5_reference.cpp" path="D:\02_workspace\02_vitis_projects\yolov5\yolov5n_speed_prj\yolov5n_speed_prj\01_hls\src\tb_r5_reference.cpp"/>
+  </testbench>
+</autopilotfilemapping:AutoPilotFileMapping>

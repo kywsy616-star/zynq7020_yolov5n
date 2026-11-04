@@ -1,0 +1,27 @@
+# Vivado
+*.rpt
+*.bit
+*.hw
+*.xci
+*.log
+*.jou
+*.str
+*.bak
+/.Xil/
+vivado*.log
+vivado*.jou
+
+# HLS
+*.prj
+*.log
+*.rpt
+solution*/
+/.autopilot/
+
+# Vitis
+Debug/
+Release/
+*.elf
+*.bin
+*.o
+*.out

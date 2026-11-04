@@ -1,0 +1,904 @@
+/*
+ * yolov5n_top.cpp -- int8 CNN accelerator for yolov5n_crack on Zynq-7020.
+ *
+ * Architecture
+ *   * one op at a time, driven by a 64-byte descriptor table in DDR
+ *     一次执行一个算子，由DDR中存放的64字节算子描述符表驱动
+ *   * all weights for ONE op stay on chip; each input tile is loaded once,
+ *     then reused by all output-channel blocks (R3.5/R4.2 architecture).
+ *     单算子权重全驻留；tile在外、ob在内，输入tile复用于所有输出通道块。
+ *   * each spatial tile stages its input window (including the halo) in BRAM
+ *     as packed c4 words (4 int8 per 32-bit word)
+ *     每个图像空间分块，将输入窗口（包含卷积所需halo边界填充像素）缓存到片上BRAM，
+ *     采用c4打包格式：1个32bit uint32存放4个int8像素，提升AXI总线带宽利用率
+ *   * a HW_CO x HW_CI (16x4) multiplier array accumulates 64 MACs/cycle
+ *     硬件乘法阵列：16×4，每个时钟周期可以并行完成64次乘累加(MAC)运算
+ *   * requant -> LeakyReLU -> int8 saturation -> residual add -> saturation.
+ *     mq / shift / bias are per output channel and live in
+ *     DDR, so re-quantising never needs a re-synthesis.
+ *     数值顺序：重量化、LeakyReLU、sat8、残差相加、sat8；R5保持此顺序。
+ *     mq缩放系数、shift移位量、bias偏置按输出通道独立存在DDR；量化参数可动态修改，不需要重新综合FPGA工程
+ *
+ * Hot loop:
+ *     tr,tc    : spatial tile                           图像空间tile分块坐标
+ *     y        : row inside the tile                    tile内部行坐标
+ *     x0       : block of HW_NX output pixels           输出像素块起始位置
+ *     ob       : output channel block                  输出通道块
+ *       ib,ky,kx : input channel block / kernel taps
+ *         nx     : fixed HW_NX iterations, valid-tail guard (R5).
+ *     R5: clipped row bursts, one dot4/accumulator update, residual q/nx order.
+ *     See ../HLS_R5_调度访存优化与综合记录_20261015.md for synthesis results.
+ *
+ * ============================================================================
+ *  ★★  yaml 模型是怎么在这个 IP 里实现的  ★★
+ * ============================================================================
+ *
+ * ----------------------------------------------------------------------------
+ * 一、三层抽象：从 yaml 到 RTL
+ * ----------------------------------------------------------------------------
+ *      yolov5_crack_speed.yaml                  "网络长什么样"     ← 人写的
+ *              │
+ *              │  make_layer_plan.py  摊平：把复合模块拆成 3 种基本算子
+ *              ▼
+ *      layer_plan.json                        "84 条指令"
+ *      ↓  quantize.py 打包
+ *      layers.bin / yolov5n_speed_layers.h     "64字节×84 的描述符表"
+ *              │
+ *              │  PS 把表首地址写进 AXI-Lite 寄存器
+ *              ▼
+ *      yolov5n_top()  ← 本文件                  "3 种算子"        ← 综合成 RTL
+ *
+ *  ★★ 关键：这个 IP 内部**没有 yolov5 的任何形状信息**。
+ *     硬件里只有 3 条数据通路（卷积 / 池化 / 搬运），
+ *     yaml 里的 C3 / SPPF / Upsample / Concat / Detect 全都不存在，
+ *     它们被摊平成这 3 种算子、逐条写进描述符表。
+ *     所以换模型不用重新综合 IP —— 换一张表就行（前提：形状不超过本 IP 的
+ *     缓冲区容量，见 yolov5n_hls.h 里的 HW_IFM_WORDS / HW_WGT_BYTES）。
+ *
+ * ----------------------------------------------------------------------------
+ * 二、yaml 的每种模块 → PL 的什么算子
+ * ----------------------------------------------------------------------------
+ *
+ *   ┌────────────────┬────────────────────────────────────────────────────────
+ *   │ yaml 模块       │ PL（本文件）里的实现                                  │
+ *   ├────────────────┼────────────────────────────────────────────────────────
+ *   │ Conv [c,k,s]   │ **1 条** LT_CONV                                      │
+ *   │                │ k 和 s 直接进描述符；k=1 和 k=3 **共用同一套数据通路** │
+ *   │                │ （conv_kernel 里 kk 是运行时参数，为此不模板化 K ——   │
+ *   │                │   模板化会让 HLS 生成两套乘法阵列，LUT 飙到 159%）    │
+ *   ├────────────────┼────────────────────────────────────────────────────────
+ *   │ C3 [c]         │ **2n+3 条**（n = bottleneck 个数）                    │
+ *   │                │ 见下面"三、C3 的拆法"                                 │
+ *   ├────────────────┼────────────────────────────────────────────────────────
+ *   │ SPPF [c,k]     │ **5 条**：cv1 + 3×LT_MAXPOOL + cv2                    │
+ *   │                │ 三级池化是**串联**的：m1 读 m0 的输出，m2 读 m1 的输出│
+ *   │                │ 靠 src_ch_off 递增实现，见下面"四、SPPF 的拆法"       │
+ *   ├────────────────┼────────────────────────────────────────────────────────
+ *   │ nn.Upsample    │ **1 条** LT_COPY，up=2                                │
+ *   │  (2x nearest)  │ 每个源像素复制成 2×2 = 一次读、四次写                 │
+ *   ├────────────────┼────────────────────────────────────────────────────────
+ *   │ Concat         │ **有几个输入就几条** LT_COPY，up=1                    │
+ *   │                │ 每一路靠 dst_ch_off 写到同一个 cat 张量的不同通道段   │
+ *   │                │ （不重新排数据，只是往不同偏移上写）                  │
+ *   ├────────────────┼────────────────────────────────────────────────────────
+ *   │ Detect         │ **每个尺度 6 条** = 18 条 LT_CONV                     │
+ *   │                │ cv2 三层 → 写 obuf[0:64]   （DFL 的 4×16 个分布值）   │
+ *   │                │ cv3 三层 → 写 obuf[64:67]  （3 个类别 logit）         │
+ *   │                │ ★ DFL 的 16-bin softmax 和 cls.sigmoid() **不在 PL 做**│
+ *   │                │   由 PS 端 decode_level() 解码（yaml 注释第 4 条）    │
+ *   └────────────────┴────────────────────────────────────────────────────────
+ *
+ * ----------------------------------------------------------------------------
+ * 三、C3 的拆法（以本模型的 C3 32 为例，yaml #2 → 算子 2~6）
+ * ----------------------------------------------------------------------------
+ *   C3 的结构是：  cat = concat( 瓶颈链的输出 , cv2(src) )， out = cv3(cat)
+ *   c_ = c/2 = 16，cat 是 2*c_ = 32 通道
+ *
+ *     op2  L02.cv1      1x1   src(L01_out) ────► cat[0 : 16]
+ *     op3  L02.m0.cv1   1x1   cat[0:16]     ────► tmp
+ *     op4  L02.m0.cv2   3x3   tmp           ────► cat[0:16]   ← 残差：+cat[0:16]
+ *     op5  L02.cv2      1x1   src(L01_out) ────► cat[16 : 32] （旁路分支）
+ *     op6  L02.cv3      1x1   cat[0:32]     ────► out
+ *
+ *   ★ 两个 Concat **一条 COPY 算子都没有** —— cat 是预先分配好的一块 DDR，
+ *     各分支靠 dst_ch_off 往它的不同通道段写，src_ch_off 从不同段读。
+ *     这是"通道偏移复用"，省掉两次搬运。
+ *
+ *   ★ 残差（Bottleneck 的 shortcut）也不用额外算子：op4 描述符里
+ *     add_off = cat 的偏移，硬件在激活之后做一次**整数加**（见 conv_kernel
+ *     第 5 步）。能直接加是因为 quantize.py 用并查集强制 dst 和 add_src
+ *     共用同一个量化 scale。
+ *
+ *   Bottleneck 多一个就多 2 条（m_i.cv1 + m_i.cv2），且**只有最后一个**
+ *   m.cv2 的结果落进 cat[0:c_]，中间的落在各自的临时张量上。
+ *   本模型：C3 32 是 n=1 → 5 条；C3 48（yaml #6 的 repeats=2）是 n=2 → 7 条。
+ *
+ * ----------------------------------------------------------------------------
+ * 四、SPPF 的拆法（yaml #9 → 算子 27~31）
+ * ----------------------------------------------------------------------------
+ *     op27 L09.cv1  1x1   src(L08_out) ───► cat[0 : 48]
+ *     op28 L09.m0   3x3池  cat[0:48]   ───► cat[48 : 96]     ← 读0，写1
+ *     op29 L09.m1   3x3池  cat[48:96]  ───► cat[96 : 144]    ← 读1，写2
+ *     op30 L09.m2   3x3池  cat[96:144] ───► cat[144 : 192]   ← 读2，写3
+ *     op31 L09.cv2  1x1   cat[0:192]   ───► out
+ *
+ *   ★ 三级池化串成一条链：每一级的 src_ch_off 指向前一级刚写出来的那段，
+  
+  
+  
+ *       3    Conv 32 3s2          7          1    32ch  48x64   ← P3 骨干（本档 32）
+ *       4    C3 32                8..12      5    32ch  48x64
+ *       5    Conv 48 3s2         13          1    48ch  24x32
+ *       6    C3 48 (repeats=2)   14..20      7    48ch  24x32
+ *       7    Conv 96 3s2         21          1    96ch  12x16   ← P5 骨干
+ *       8    C3 96               22..26      5    96ch  12x16
+ *       9    SPPF 96             27..31      5    96ch  12x16
+ *      10    Conv 48 1x1         32          1    48ch  12x16
+ *      11    Upsample            33          1    48ch  12x16 → 24x32
+ *      12    Concat(-1, #6)      34,35       2    96ch  24x32   (48+48)
+ *      13    C3 48               36..40      5    48ch  24x32
+ *      14    Conv 32 1x1         41          1    32ch  24x32
+ *      15    Upsample            42          1    32ch  24x32 → 48x64
+ *      16    Concat(-1, #4)      43,44       2    64ch  48x64   (32+32)
+ *      17    C3 32               45..49      5    32ch  48x64   ← P3 检测头输入
+ *      18    Conv 48 3s2         50          1    48ch  24x32
+ *      19    Concat(-1, #14)     51,52       2    80ch  24x32   (48+32)
+ *      20    C3 64               53..57      5    64ch  24x32   ← P4 检测头输入
+ *      21    Conv 128 3s2        58          1   128ch  12x16
+ *      22    Concat(-1, #10)     59,60       2   176ch  12x16   (128+48)
+ *      23    C3 128              61..65      5   128ch  12x16   ← P5 检测头输入
+ *      --    Detect(17,20,23)    66..83     18    67ch × 3 个尺度
+ *                                            ----
+ *                                            84 条
+ *
+ * ----------------------------------------------------------------------------
+ * 六、三种算子怎么处理数据（对应描述符里的字段）
+ * ----------------------------------------------------------------------------
+ *   所有激活值都在同一块 DDR arena 里（PS 端 yolo_arena[]，5,745,408 B）。
+ *   描述符里的 src_off / dst_off / add_off 就是这块 arena 里的**字节偏移**。
+ *
+ *     LT_CONV    读 p_act + src_off + c4_index(src_ch_off + ...)
+ *                卷完 写 p_act + dst_off + c4_index(dst_ch_off + ...)
+ *                若 add_off >= 0，在激活之后再加一次残差
+ *     LT_MAXPOOL 同上取数，但换成 3x3 取最大；src/dst 常是同一块张量的不同段
+ *     LT_COPY    不计算，只搬；up=2 时 1 个源像素写成 4 个输出像素
+ *
+ *   ★ c4 打包（全片统一的布局，写错必错）：
+ *         int8 激活，4 个通道塞进一个 32 位字 → [C/4][H][W][4]
+ *         字节下标 = (((c>>2)*H + h)*W + w)*4 + (c&3)
+ *     所以 67 通道的检测头输出实际占 68 个通道的位置，第 68 道是填充。
+ *     两个硬性推论：
+ *        · ic 必须是 4 的倍数、oc 必须是 16 的倍数（否则数组边界对不齐）
+ *        · src_ch_off / dst_ch_off / add_ch_off 必须是 4 的倍数
+ *         —— 这两条在 yolov5n_top() 里都加了校验（见那里的"防御 2"）
+ *
+ *   ★ 量化参数（rqt）也是运行时从 DDR 读的：
+ *         M[oc] = sw[oc]*sx/sy 存成 {mq, shift}，偏置存成整数 bi
+ *         —— PC 端 quantize.py 离线算好，IP 只管用。
+ *         换量化方案不用重新综合 IP。
+ */
+#include <ap_int.h>
+#include "yolov5n_hls.h"
+#define CO  HW_CO   // 单次并行输出通道数，你的工程设为16
+#define CI  HW_CI   // 单次并行输入通道数，你的工程设为4
+#define NX  HW_NX   // 单次并行空间像素数量
+#if HW_CI != 4
+#error R5_dot4_requires_the_existing_c4_layout
+#endif
+
+/* ------------------------------------------------------------------ buffers */
+/* ★ 一条 HLS 的硬性规则：**#pragma HLS 只能写在函数作用域里**。
+   写在文件作用域（数组声明旁边）会直接报错、综合根本起不来：
+       ERROR: [HLS 214-122] '#pragma HLS' is only allowed in function scope
+   所以"数组分区"这类指令必须放进**使用该数组的函数内部**。
+   （2026-10-11 踩过一次：6 条 ARRAY_PARTITION 放在这里 → csynth 直接失败）
+
+   因此下面的数组是这么分的：
+     ifm_buf  —— conv_kernel 和 pool_op 都要用 → 只能留在文件作用域。
+                 它的访问是"每周期 1 次"，本来就不需要分区。
+     其余 6 块 —— 只有 conv_kernel 用 → 挪进 conv_kernel 当**局部数组**，
+                 分区 pragma 就紧贴在它们的声明后面（见 conv_kernel 开头）。
+*/
+
+// 片上BRAM缓存：输入特征图tile，c4打包，每个uint32存4个int8像素
+static uint32_t ifm_buf[HW_IFM_WORDS];
+/* --------------------------------------------------------------- utilities */
+/**
+ * @brief 饱和截断函数，将int32数值限制在int8范围 [-128,127]
+ * @param v 待截断32bit整数
+ * @return 饱和后int8范围数值
+ * #pragma HLS INLINE：函数内联，消除函数调用开销
+ */
+static inline int32_t sat8(int32_t v)
+{
+#pragma HLS INLINE
+    if (v > 127)  return 127;
+    if (v < -128) return -128;
+    return v;
+}
+
+/**
+ * @brief 带四舍五入的右移，定点运算标准舍入
+ * @param v 64bit输入累加值
+ * @param sh 移位位数
+ * @return 舍入右移后的32bit结果
+ */
+static inline int32_t rshift_round(int64_t v, int sh)
+{
+#pragma HLS INLINE
+    if (sh <= 0) return (int32_t)(v << (-sh));
+    int64_t h = ((int64_t)1) << (sh - 1); // 四舍五入偏移量，+0.5
+    return (int32_t)((v + (v >= 0 ? h : -h)) >> sh);
+}
+
+/**
+ * @brief 带四舍五入右移（ap_int版本，HLS专用任意精度整数）
+ * @param v 44bit任意精度累加乘积
+ * @param sh 移位位数
+ * @return 舍入右移后32bit结果
+ */
+static inline int32_t rshift_round_ap(ap_int<44> v, int sh)
+{
+#pragma HLS INLINE
+    if (sh <= 0) return (v << (-sh)).to_int();
+    ap_int<44> h = ((ap_int<44>)1) << (sh - 1);
+    ap_int<44> r = (v >= 0) ? (v + h) : (v - h);
+    return (r >> sh).to_int();
+}
+
+/**
+ * @brief c4打包张量寻址函数：计算通道c、坐标(h,w)对应的字节偏移
+ * @param c 通道号
+ * @param h 图像高
+ * @param w 图像宽
+ * @param H 张量总高度
+ * @param W 张量总宽度
+ * @return 字节地址偏移
+ * 打包规则：每4个连续通道打包进1个uint32；c>>2 找到是第几个c4 word；c&3 是word内第几个字节
+ */
+static inline uint32_t c4_index(int c, int h, int w, int H, int W)
+{
+#pragma HLS INLINE
+    return (uint32_t)((((c >> 2) * H + h) * W + w) * 4 + (c & 3));
+}
+
+/* ------------------------------------------------------------------- copy */
+/**
+ * @brief Copy算子：张量搬运（Concat/Upsample），R3改动#3重构为两步法
+ *
+ * ★ R3改动#3：抄 conv 的两步法重构
+ * 原来循环体是 v=load(); store(v)，读→写数据依赖，II=16、iter_lat=21，
+ * 只有 ~1.3 个迭代在飞，DDR 读延迟完全没被掩盖。实测 63 周期/源字，10条全部一致）。
+ * 现在改成，
+ *   第一步：按空间 tile 把源数据读到片上 ifm_buf（只有DDR读，II=1，
+ *   第二步：从 ifm_buf 写回 DDR（只有DDR写，II=1，
+ * 两个循环各自只有一种访存方向，都能跑到 II=1。
+ * up=2 的最近邻上采样：输出(y,x)对应源(y/2, x/2)，在第二步里做。
+ *
+ * @param p_act DDR特征图基地址
+ * @param src_off 源张量偏移
+ * @param dst_off 目标张量偏移
+ * @param src_ch_off 源通道起始偏移
+ * @param dst_ch_off 目标通道起始偏移
+ * @param cch 当前处理通道总数
+ * @param ih 输入高
+ * @param iw 输入宽
+ * @param up 上采样倍数 up=1原样拷贝；up=2最近邻×2上采样
+ * @param tile_r,tile_c 空间分块大小（从描述符读取，与conv/pool共用）
+ * #pragma HLS INLINE off：不内联，单独生成硬件模块，作为独立算子
+ */
+static void copy_op(const int8_t *p_act, int32_t src_off, int32_t dst_off,
+                    int src_ch_off, int dst_ch_off, int cch, int ih, int iw,
+                    int up, int tile_r, int tile_c)
+{
+#pragma HLS INLINE off
+    /* 防御：up 只允许 1（普通拷贝）和 2（2 倍上采样）。
+       若描述符里写成 0，下面 oh = ih*0 = 0，而 c4_index() 里 H/W 传 0 会让
+       `h` 从地址式子里消失 —— 所有行都写同一个地址，最后只剩最后一行，
+       盖在 dst 开头一小块里，后面所有层全读到垃圾，且不会报任何错。 */
+    if (up != 2) up = 1;
+    int oh = ih * up;
+    int ow = iw * up;
+    int nw = (cch + 3) >> 2;                       /* c4 words per pixel：总通道转成c4 word数量 */
+
+    // g：遍历每组c4通道（4通道一组）
+    for (int g = 0; g < nw; g++) {
+        // 按输出空间 tile 分块（R3改动#3：原来整张张量一把梭，现在按tile分块，
+        for (int tr = 0; tr < oh; tr += tile_r) {
+            for (int tc = 0; tc < ow; tc += tile_c) {
+                int nr = (tr + tile_r <= oh) ? tile_r : (oh - tr);
+                int nc = (tc + tile_c <= ow) ? tile_c : (ow - tc);
+
+                // 源tile尺寸：up=2时输出是输入的2倍，源尺寸是输出的一半（向上取整，
+                int src_nr = (nr + up - 1) / up;
+                int src_nc = (nc + up - 1) / up;
+                int src_tr = tr / up;   // 输出tile起始坐标对应的源坐标
+                int src_tc = tc / up;
+
+                /* ---- 第一步：把源tile从DDR读到片上ifm_buf（只有DDR读，II=1） ----
+                 * 这一步和 conv 的 staging 循环完全同构：只有 m_axi 读，
+                 * 综合报告已证明纯读循环能跑到 II achieved = 1。
+                 * ★ LUT优化：去掉边界检查（sr<ih && sc<iw）。
+                 *   描述符里tile_r/tile_c=16，所有特征图尺寸都是16的倍数（
+                 *   up=2时输出=输入×2也都是16倍数，tile不会越界。
+                 *   去掉比较器和mux，降低LUT。 */
+                for (int r = 0; r < src_nr; r++) {
+                    for (int c = 0; c < src_nc; c++) {
+#pragma HLS PIPELINE II=1
+                        int sr = src_tr + r;
+                        int sc = src_tc + c;
+                        // 直接读DDR（tile对齐不越界，无需边界检查）
+                        uint32_t v = *(const uint32_t *)(p_act + src_off
+                                     + c4_index(src_ch_off + (g << 2), sr, sc, ih, iw));
+                        ifm_buf[r * src_nc + c] = v;
+                    }
+                }
+
+                /* ---- 第二步：从片上ifm_buf写回DDR（只有DDR写，II=1） ----
+                 * up=1：1个源像素→1个输出像素（sy=y, sx=x，
+                 * up=2：1个源像素→2×2=4个输出像素（最近邻，sy=y/2, sx=x/2，
+                 * 这一步和 conv 的写回循环完全同构：只有 m_axi 写，II=1。
+                 * 原来 up=2 的四次写里有两处相隔整整一行，现在按输出坐标顺序写，
+                 * 地址沿w方向连续，可以凑burst。 */
+                for (int y = 0; y < nr; y++) {
+                    for (int x = 0; x < nc; x++) {
+#pragma HLS PIPELINE II=1
+                        int sy = y / up;  // up=1: sy=y; up=2: sy=y/2（最近邻，
+                        int sx = x / up;
+                        uint32_t v = ifm_buf[sy * src_nc + sx];
+                        *(uint32_t *)(p_act + dst_off + c4_index(
+                            dst_ch_off + (g << 2), tr + y, tc + x, oh, ow)) = v;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------- pool */
+/**
+ * @brief Pool算子：固定3×3 MaxPool，stride=1，pad=1（SPPF专用池化算子）
+ * @param p_act DDR特征图基地址
+ * @param src_off 源张量偏移
+ * @param dst_off 目标张量偏移
+ * @param src_ch_off 源通道起始
+ * @param dst_ch_off 目标通道起始
+ * @param cch 当前处理通道数
+ * @param ih,iw 输入特征图高宽
+ * @param tile_r tile_c 空间分块大小
+ */
+static void pool_op(const int8_t *p_act, int32_t src_off, int32_t dst_off,
+                    int src_ch_off, int dst_ch_off, int cch,
+                    int ih, int iw, int tile_r, int tile_c)
+{
+#pragma HLS INLINE off
+    int nw = (cch + 3) >> 2;                       /* c4 words (channel groups) */
+    int oh = ih, ow = iw;                          /* 3x3/s1/p1，输出尺寸不变 */
+    // g：遍历c4通道组
+    for (int g = 0; g < nw; g++) {
+        // 空间维度分块tile，降低片上BRAM缓存大小
+        for (int tr = 0; tr < oh; tr += tile_r) {
+            for (int tc = 0; tc < ow; tc += tile_c) {
+                int nr = (tr + tile_r <= oh) ? tile_r : (oh - tr);
+                int nc = (tc + tile_c <= ow) ? tile_c : (ow - tc);
+                int rows = nr + 2, cols = nc + 2; // tile+halo边界，3×3池化需要外围一圈像素
+                int r0 = tr - 1, c0 = tc - 1;     // 池化的窗口直接用 r*cols+c 寻址，不需要 stride
+                // 第一步：把包含halo的窗口从DDR读到片上ifm_buf
+                for (int r = 0; r < rows; r++) {
+                    int sr = r0 + r;
+                    int inrow = (sr >= 0) && (sr < ih); // 判断是否越界，越界填充int8最小值
+                    for (int c = 0; c < cols; c++) {
+#pragma HLS PIPELINE II=1
+                        int sc = c0 + c;
+                        uint32_t v = 0x80808080u;      /* int8最小值，不会参与max比较 */
+                        if (inrow && sc >= 0 && sc < iw)
+                            v = *(const uint32_t *)(p_act + src_off
+                                 + c4_index(src_ch_off + (g << 2), sr, sc, ih, iw));
+                        ifm_buf[r * cols + c] = v;
+                    }
+                }
+                // 第二步：片上ifm_buf滑动窗口做3×3最大值池化
+                for (int y = 0; y < nr; y++) {
+                    for (int x = 0; x < nc; x++) {
+#pragma HLS PIPELINE II=1
+                        uint32_t mx = 0x80808080u;
+                        int base = y * cols + x;
+                        // 3×3卷积核循环，完全展开unroll
+                        for (int ky = 0; ky < 3; ky++) {
+#pragma HLS UNROLL
+                            for (int kx = 0; kx < 3; kx++) {
+#pragma HLS UNROLL
+                                uint32_t v = ifm_buf[base + ky * cols + kx];
+                                // c4打包4个通道并行比较最大值
+                                for (int ci = 0; ci < 4; ci++) {
+#pragma HLS UNROLL
+                                    int8_t a = (int8_t)((mx >> (ci * 8)) & 0xFF);
+                                    int8_t b = (int8_t)((v  >> (ci * 8)) & 0xFF);
+                                    if (b > a) mx = (mx & ~(0xFFu << (ci * 8)))
+                                                  | ((uint32_t)(uint8_t)b << (ci * 8));
+                                }
+                            }
+                        }
+                        // 池化结果写回DDR
+                        *(uint32_t *)(p_act + dst_off + c4_index(dst_ch_off + (g << 2),
+                                       tr + y, tc + x, oh, ow)) = mx;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------- conv */
+/**
+ * @brief Conv算子：支持动态1×1 /3×3卷积，stride/pad可配置；支持残差add、LeakyReLU激活、INT8重量化
+ * @param p_act DDR特征图基地址
+ * @param p_wgt DDR权重基地址（int8 c4打包，
+ * @param p_rqt DDR重量化参数(mq,shift,bias)
+ * @param src_off 输入特征偏移
+ * @param dst_off 输出特征偏移
+ * @param wgt_off 权重偏移
+ * @param rq_off 量化参数偏移
+ * @param add_off 残差分支输入偏移，add_off >=0代表启用残差shortcut（C3模块残差）
+ * @param add_ch_off 残差通道起始
+ * @param dst_ch_off 输出通道起始
+ * @param ih,iw 输入高宽
+ * @param ic 输入通道总数
+ * @param oh,ow 输出高宽
+ * @param oc 输出通道（向上补齐到16倍数）
+ * @param oc_real 模型真实输出通道（剔除补齐虚拟通道）
+ * @param kk 卷积核尺寸 1 or 3
+ * @param ss stride步长
+ * @param pad 填充
+ * @param act 激活类型 ACT_LEAKY or NO_ACT
+ * @param tile_r tile_c 空间分块大小
+ * 设计亮点：运行时动态kk，不需要模板；只生成一套乘法阵列，避免综合两套卷积硬件造成LUT爆炸
+ */
+static void conv_kernel(const int8_t *p_act, const int8_t *p_wgt, const int32_t *p_rqt,
+                        int32_t src_off, int32_t dst_off,
+                        int32_t wgt_off, int32_t rq_off, int32_t add_off,
+                        int src_ch_off, int add_ch_off, int dst_ch_off,
+                        int ih, int iw, int ic, int oh, int ow, int oc, int oc_real,
+                        int kk, int ss, int pad, int act, int tile_r, int tile_c)
+{
+#pragma HLS INLINE off
+    /* ======================================================================
+     * 片上缓冲 & requant 参数（**局部数组**，
+     *   放在函数内部是因为 #pragma HLS 只能在函数作用域生效（见文件头 buffers
+     *   那段注释）。这 6 块只有本函数用，做成局部数组最自然。
+     * ====================================================================== */
+    // R3.5 起缓存整个算子的全部输出通道块；不是全网络权重。
+    uint32_t wgt_buf[HW_WGT_BYTES / 4];
+    // 乘累加结果：NX 个像素 × CO 个输出通道，int32 累加器防溢出
+    int32_t  acc_buf[NX][CO];
+    // 重量化参数：当前输出通道块的 bias / 乘数 mq / 右移 shift
+    int32_t  rq_bias[CO], rq_mq[CO], rq_sh[CO];
+    // 标记哪些是模型真实存在的通道（16 倍数补齐出来的虚拟通道不输出）
+    uint8_t  rq_ocreal[CO];
+    /* ★ R4.2优化：requant参数全驻留片上（用BRAM，不增加LUT，
+     * 原来ob在内层后，每个(x0,ob)块都要从DDR重新加载16通道的requant参数，
+     * 大特征图有几百个(x0)块，累计DDR读开销可观。
+     * 现在把整个算子的requant参数一次执加载到片上（最大128通道×3参数=1536字节≈2块BRAM），
+     * ob循环内直接从片上读，不再访问DDR。预期省10~20ms。 */
+    int32_t  rq_all_buf[HW_MAX_OC][3];
+#pragma HLS ARRAY_PARTITION variable=rq_all_buf complete dim=2
+    // ★ 输出暂存：requant 的结果先放这里（纯片上），**不在计算循环里写 DDR**。
+    //   见下面"第 6 步"的说明。尺寸 [NX][CO/CI] = 16x4 个 uint32。
+    uint32_t out_buf[NX][CO / CI];
+    // ★ R3改动#2：残差数据片上缓冲。
+    //   原来在 requant 循环里齐字节读 DDR 残差（int8_t* 指针（4通道拆成4次8-bit load），
+    //   历史版本逐字节跨通道平面读取；当前speed表实际有5条残差算子。
+    //   现在提前把整个 (nx, q) 块的残差 c4 word 预取到这里（一次32-bit load读4通道），
+    //   requant 循环里只做片上寄存器访问。
+    //   尺寸 [NX][4] = 16×4 个 uint32（nwoc_ob 最大为 CO/CI=4）。
+    uint32_t res_buf[NX][4];
+
+    /* ---- 数组分区：决定流水线能不能到 II=1（★★★ 性能关键，改之前先看这段） ----
+     *
+     * 【病灶】
+     *   下面 MAC 归约循环里 `co` 被 UNROLL 展开成 16 路，于是**一个时钟周期**
+     *   要同时访问 16 个不同地址：
+     *       acc_buf[nx][0..15]      16 路读改写
+     *       wgt_buf[wbase + 0..15]  16 路读
+     *   而这两块数组默认会被综合成**一块双口 BRAM（只有 2 个端口）**，供不上
+     *   16 路 —— 综合器只能把 64 个乘法器按 16 路时分复用。结果：
+     *       II achieved = 16（源码里写的是 1），每周期只发出 4 个 MAC，
+     *       infer 从应有的 ~150 ms 变成 2449 ms（慢 16 倍）。
+     *
+     * 【为什么是这两个切法】
+     *   acc_buf complete dim=2 —— 按 `co` 切成 16 块。`co` 展开后是**编译期
+     *       常量**，等于"数组选择器"，不需要多路选择器；`nx` 只是块内地址。
+     *       ★ 反过来按 dim=1（按 nx）切会引入 16 选 1 的 mux，每一路一个，
+     *         LUT 会爆。
+     *   wgt_buf cyclic factor=16 —— 访问地址是 wbase+co，而 wbase 一定是 16
+     *       的倍数（= ((ib*kk+ky)*kk+kx)*CO），所以 (wbase+co)%16 == co，
+     *       正好每一路落在一个独立 bank 里，互不打架。
+     *   rq_* 各只有 16 项 —— 直接摊成寄存器（requant 循环每周期要读 4 个 co
+     *       的 bias/mq/shift，现在它们也是 BRAM，同样会被限速）。
+     *
+     * 【怎么验证改对了】
+     *   重跑 csynth，看 conv_kernel_csynth.rpt 里这两行的 `II achieved`
+     *   **必须从 16 变成 1**（不要看别的估计值）：
+     *       VITIS_LOOP____..____   （MAC 归约循环）
+     *       VITIS_LOOP____..____   （requant / 存回循环）
+     *   资源上：wgt_buf 分 16 bank 大约多用 16 块 BRAM18K（原用量 58/280，够）。
+     * ---------------------------------------------------------------------- */
+#pragma HLS ARRAY_PARTITION variable=acc_buf   complete dim=2
+#pragma HLS ARRAY_PARTITION variable=wgt_buf   cyclic factor=16 dim=1
+#pragma HLS ARRAY_PARTITION variable=rq_bias   complete
+#pragma HLS ARRAY_PARTITION variable=rq_mq     complete
+#pragma HLS ARRAY_PARTITION variable=rq_sh     complete
+#pragma HLS ARRAY_PARTITION variable=rq_ocreal complete
+// out_buf 完全摊成寄存器（dim=0 = 执有维度），
+// 这样"算"和"写回"两个循环都能 1 周期并行访问全部 64 个字
+#pragma HLS ARRAY_PARTITION variable=out_buf    complete dim=0
+// R3改动#2：res_buf 完全摊成寄存器。
+// 预取循环写、requant循环读，两个循环都需要1周期并行访问全部64个字。
+// 摊成寄存器后，残差相加不再有BRAM端口冲突。
+#pragma HLS ARRAY_PARTITION variable=res_buf    complete dim=0
+    int icb = ic / CI;       // 输入通道块数量，每次并行CI=4通道
+    int ocb = oc / CO;       // 输出通道块数量，每次并行CO=16通道
+    int nwoc = (oc_real + 3) >> 2;
+    (void)nwoc;
+
+    /* ======================================================================
+     * ★ R4改动#5：ob循环挪到tile内层 + 权重全驻留（病灶A的主项，预期真152ms（
+     *
+     * 【原来的结构（ob在外层）。
+     *   for ob → 加载权重 → for tile → staging输入 → MAC → requant → 写回
+     *   问题：每个ob都把输入tile重读个遍！输入被读了oc/16遍（放大2.57倍）。
+     *   op67(64→64)的staging读放大5.06倍，全网staging读3,686,328字。
+     *
+     * 【现在的结构（tile在外层，ob在内层）。
+     *   加载所有权重（全驻留）→ for tile → staging输入（只做一次！，
+     *     → for y,x0 → for ob → MAC → requant → 写回
+     *   优化1：输入tile只读取一次，多个ob复用ifm_buf，staging读降个半。
+     *   优化2：权重全驻留wgt_buf（HW_WGT_BYTES 18432→73728），整个算子的权重
+     *          只加载一次，不再每个ob/tile重读。
+     *   全网staging读 3,686,328→1,827,948字，权重读 181,136字（不变，全驻留），
+     *   合计省约152ms。
+     *
+     * 【注意】ob在内层后，requant参数(rq_bias/mq/sh)每个ob重新加载一次（在ob循环内），
+     *   但只有16次循环(CO=16)，开销很小，相对于MAC的几千周期可以忽略。
+     * ====================================================================== */
+
+    /* ---- ★ 权重全驻留：整个算子的权重一次性加载到片上wgt_buf ----
+     * 原来在ob循环内每个ob加载一次（ocb次），现在只加载一次。
+     * HW_WGT_BYTES已从18432增大到73728，可容纳最大层op58(128×64×3×3=73728字节)。
+     * 权重布局：wgt_buf[ob * icb*kk*kk*CO + (ib*kk+ky)*kk*kx)*CO + co] */
+    {
+        const int8_t *wp = p_wgt + wgt_off;
+        int nw = ocb * icb * kk * kk * CO * CI / 4;  // 整个算子的权重字数(uint32)
+        for (int i = 0; i < nw; i++) {
+#pragma HLS PIPELINE II=1
+            wgt_buf[i] = ((const uint32_t *)wp)[i];
+        }
+    }
+
+    /* ★ R4.2优化：requant参数全驻留加载（整个算子只做一次，在tile循环外）
+     * 把oc_real个通道的(bias, mq, shift)一次执从DDR读到片上rq_all_buf，
+     * 后面ob循环里直接从片上读，不再每个(x0,ob)块都访问DDR。
+     * 最大层128通道，共384个int32；实际加载II以综合报告为准。 */
+    {
+        int rq_base = (rq_off >> 2);  // requant参数在p_rqt里的字偏移
+        for (int co = 0; co < oc_real; co++) {
+#pragma HLS PIPELINE II=1
+            int idx = rq_base + co * 3;
+            rq_all_buf[co][0] = p_rqt[idx + 0];  // bias
+            rq_all_buf[co][1] = p_rqt[idx + 1];  // mq
+            rq_all_buf[co][2] = p_rqt[idx + 2];  // shift
+        }
+    }
+
+    // ========= ★ tile循环挪到外层：输入tile只读取一次，多个ob复用 =========
+    for (int tr = 0; tr < oh; tr += tile_r) {
+        for (int tc = 0; tc < ow; tc += tile_c) {
+            int nr = (tr + tile_r <= oh) ? tile_r : (oh - tr);
+            int nc = (tc + tile_c <= ow) ? tile_c : (ow - tc);
+            int rows = (nr - 1) * ss + kk;
+            int cols = (nc - 1) * ss + kk;
+            int r0 = tr * ss - pad;
+            int c0 = tc * ss - pad;
+            int stride = rows * cols;
+
+            /* ---- 3.输入特征窗口（含halo边界）预加载到片上ifm_buf ----
+             * ★ R4改动#5：这个步现在每个tile只做一次！原来ob在外层时每个ob都重做。
+             * 输入被读的次数从 ocb×tile数 降到 tile数，staging读降个半。 */
+            /* R5: separate halo fill from the contiguous DDR row load.
+             * The valid loop has no per-word bounds test and one linear
+             * uint32 pointer, so HLS can infer an AXI read burst.
+             * Bounds remain correct for partial tiles and fully padded rows. */
+            const int first_col = (c0 < 0) ? ((-c0 < cols) ? -c0 : cols) : 0;
+            const int row_end = iw - c0;
+            const int last_col = (row_end < 0) ? 0 : ((row_end < cols) ? row_end : cols);
+            const int valid_end = (last_col > first_col) ? last_col : first_col;
+            const int src_plane = ih * iw;
+            const uint32_t *src_words = (const uint32_t *)(p_act + src_off);
+            for (int g = 0; g < icb; g++) {
+                const int plane_base = ((src_ch_off >> 2) + g) * src_plane;
+                for (int r = 0; r < rows; r++) {
+                    const int sr = r0 + r;
+                    const int tile_base = g * stride + r * cols;
+                    if (sr < 0 || sr >= ih) {
+                    STAGE_PAD_ROW:
+                        for (int c = 0; c < cols; c++) {
+#pragma HLS PIPELINE II=1
+                            ifm_buf[tile_base + c] = 0;
+                        }
+                    } else {
+                    STAGE_PAD_LEFT:
+                        for (int c = 0; c < first_col; c++) {
+#pragma HLS PIPELINE II=1
+                            ifm_buf[tile_base + c] = 0;
+                        }
+                        const int read_base = plane_base + sr * iw + c0;
+                    STAGE_VALID:
+                        for (int c = first_col; c < valid_end; c++) {
+#pragma HLS PIPELINE II=1
+                            ifm_buf[tile_base + c] = src_words[read_base + c];
+                        }
+                    STAGE_PAD_RIGHT:
+                        for (int c = valid_end; c < cols; c++) {
+#pragma HLS PIPELINE II=1
+                            ifm_buf[tile_base + c] = 0;
+                        }
+                    }
+                }
+            }
+
+            // ========= 图像tile内逐行逐像素计算 =========
+            for (int y = 0; y < nr; y++) {
+                for (int x0 = 0; x0 < nc; x0 += NX) {
+                    int nxx = (x0 + NX <= nc) ? NX : (nc - x0);
+
+                    // ========= ★ ob循环挪到内层：同一个(x0)块内连续计算多个ob =========
+                    for (int ob = 0; ob < ocb; ob++) {
+                        int oc_base = ob * CO; // 当前通道块起始通道号
+                        int nwoc_ob = (oc_real > oc_base) ? ((oc_real - oc_base + 3) >> 2) : 0;
+                        if (nwoc_ob > (CO >> 2)) nwoc_ob = CO >> 2;
+
+                        /* ---- 1.从片上rq_all_buf取当前通道块的重量化参数（R4.2优化） ----
+                         * 整个算子的requant参数已在tile循环外一次执加载到rq_all_buf（BRAM），
+                         * 这里只做片上寄存器拷贝，不再访问DDR。
+                         * co展开为16路请求；实际读取延迟由rq_all_buf端口和调度决定，
+                         * UNROLL本身不保证这16路拷贝在一个周期内完成。 */
+                        for (int co = 0; co < CO; co++) {
+#pragma HLS UNROLL
+                            int gco = oc_base + co;  // 全局通道号
+                            rq_bias[co] = rq_all_buf[gco][0];  // bias
+                            rq_mq[co]   = rq_all_buf[gco][1];  // mq
+                            rq_sh[co]   = rq_all_buf[gco][2];  // shift
+                            rq_ocreal[co] = (gco < oc_real) ? 1 : 0;
+                        }
+
+                        // 累加器初始化：加载bias偏置
+                        for (int nx = 0; nx < NX; nx++) {
+#pragma HLS UNROLL
+                            for (int co = 0; co < CO; co++) {
+#pragma HLS UNROLL
+                                acc_buf[nx][co] = (nx < nxx) ? rq_bias[co] : 0;
+                            }
+                        }
+
+                        /* ---- 4.核心MAC乘累加计算：16×4乘法阵列，每周期64MAC ----
+                         * ★ R4改动#5：权重地址加上ob偏移，
+                         *   原来wgt_buf只存单个ob的权重，wbase = ((ib*kk+ky)*kk+kx)*CO。
+                         *   现在wgt_buf存所有ob的权重（全驻留），需要加上ob的偏移：
+                         *   ob_offset = ob * icb * kk * kk * CO（每个ob的权重字数）
+                         *   这样同一个tile的ifm_buf可以被多个ob复用，输入只读取一次。 */
+                        const int ob_offset = ob * icb * kk * kk * CO;
+                        for (int ib = 0; ib < icb; ib++) {
+                            for (int ky = 0; ky < kk; ky++) {
+                                for (int kx = 0; kx < kk; kx++) {
+                                    // ★ 权重地址 = ob偏移 + 层内偏移
+                                    int wbase = ob_offset + ((ib * kk + ky) * kk + kx) * CO;
+                                    int ibase = ib * stride + (y * ss + ky) * cols
+                                              + (x0 * ss + kx);
+                                MAC_PIXELS:
+                                    for (int nx = 0; nx < NX; nx++) {
+#pragma HLS PIPELINE II=1
+                                        /* Fixed NX gives a known accumulator
+                                         * revisit distance; inactive tail
+                                         * lanes do not access the IFM. */
+                                        if (nx < nxx) {
+                                            uint32_t iv = ifm_buf[ibase + nx * ss];
+                                            for (int co = 0; co < CO; co++) {
+#pragma HLS UNROLL
+                                                const uint32_t ww = wgt_buf[wbase + co];
+                                                const int32_t p0 = (int8_t)(iv)       * (int32_t)(int8_t)(ww);
+                                                const int32_t p1 = (int8_t)(iv >> 8)  * (int32_t)(int8_t)(ww >> 8);
+                                                const int32_t p2 = (int8_t)(iv >> 16) * (int32_t)(int8_t)(ww >> 16);
+                                                const int32_t p3 = (int8_t)(iv >> 24) * (int32_t)(int8_t)(ww >> 24);
+                                                const int32_t dot4 = (p0 + p1) + (p2 + p3);
+                                                // One accumulator update per c4 dot product.
+                                                acc_buf[nx][co] += dot4;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        /* ---- 4.5 残差数据预取到片上（R3改动#2，保持不变） ---- */
+                        if (add_off >= 0) {
+                            const uint32_t *res_words = (const uint32_t *)(p_act + add_off);
+                            for (int q = 0; q < nwoc_ob; q++) {
+                                const int res_base = (((add_ch_off + oc_base) >> 2) + q) * oh * ow
+                                                   + (tr + y) * ow + tc + x0;
+                            RESIDUAL_READ:
+                                for (int nx = 0; nx < nxx; nx++) {
+#pragma HLS PIPELINE II=1
+                                    res_buf[nx][q] = res_words[res_base + nx];
+                                }
+                            }
+                        }
+
+                        /* ---- 5.重量化、LeakyReLU、残差相加、饱和截断。
+                         * 数值顺序不变；实际II见报告，不能沿用旧的II=4注释。 ---- */
+                        for (int nx = 0; nx < nxx; nx++) {
+                            for (int q = 0; q < nwoc_ob; q++) {
+#pragma HLS PIPELINE II=1
+                                uint32_t word = 0;
+                                for (int ci = 0; ci < CI; ci++) {
+#pragma HLS UNROLL
+                                    int co = (q << 2) + ci;
+                                    int32_t v = 0;
+                                    if (co < CO && rq_ocreal[co]) {
+                                        // int8 × int8 → 26bit ×18bit乘法，复用DSP48资源
+                                        ap_int<26> aa = acc_buf[nx][co];
+                                        ap_int<18> mm = rq_mq[co];
+                                        ap_int<44> pp = aa * mm;
+                                        v = rshift_round_ap(pp, rq_sh[co]);
+                                        // LeakyReLU(0.1)定点近似：v<0时 v*3277 >>15 ≈ v*0.1
+                                        // ★ LUT优化：int32乘法代替int64乘法（v正常范围只有几百，不会溢出）
+                                        if (act == ACT_LEAKY && v < 0)
+                                            v = (v * 3277) >> 15;
+                                        v = sat8(v);
+                                        // ★ R3改动#2：从片上 res_buf 读残差（不再直接读DDR，
+                                        if (add_off >= 0) {
+                                            uint32_t rv = res_buf[nx][q];
+                                            int8_t rsv = (int8_t)((rv >> (ci * 8)) & 0xFF);
+                                            v = sat8(v + (int32_t)rsv);
+                                        }
+                                    }
+                                    // 打包回uint32，4个int8拼成c4 word
+                                    word |= ((uint32_t)(v & 0xFF)) << (ci * 8);
+                                }
+                                // 结果先存片上，故意不在这里写 DDR
+                                out_buf[nx][q] = word;
+                            }
+                        }
+
+                        /* ---- 6.统一写回 DDR（R3改动#1：换序for q{for nx}，保持不变） ---- */
+                        uint32_t *dst_words = (uint32_t *)(p_act + dst_off);
+                        for (int q = 0; q < nwoc_ob; q++) {
+                            const int dst_base = (((dst_ch_off + oc_base) >> 2) + q) * oh * ow
+                                               + (tr + y) * ow + tc + x0;
+                        OUTPUT_WRITE:
+                            for (int nx = 0; nx < nxx; nx++) {
+#pragma HLS PIPELINE II=1
+                                dst_words[dst_base + nx] = out_buf[nx][q];
+                            }
+                        }
+                    } // ob循环结束（★ R4改动#5：ob挪到内层，
+                } // x0循环结束
+            } // y循环结束
+        } // tc循环结束
+    } // tr循环结束（★ R4改动#5：tile挪到外层，
+}
+
+/* -------------------------------------------------------------------- top */
+/**
+ * @brief 加速器顶层函数，PL IP入口
+ * 读取DDR算子描述符表，循环调度Conv/Pool/Copy三类算子；
+ * AXI4-Master接口访问DDR特征图、权重、量化参数；AXI-Lite寄存器由PS控制启停
+ * @param p_act 特征图DDR地址
+ * @param p_wgt 权重DDR地址
+ * @param p_rqt 重量化参数DDR地址
+ * @param p_tbl 算子描述符表DDR地址
+ * @param start_op 起始算子序号
+ * @param n_ops 需要执行算子数量
+ */
+void yolov5n_top(const int8_t  *p_act,
+                 const int8_t  *p_wgt,
+                 const int32_t *p_rqt,
+                 const int32_t *p_tbl,
+                 int start_op,
+                 int n_ops)
+{
+// AXI Master接口配置，全部挂在gmem总线；设置burst长度、 outstanding，提升DDR带宽
+#pragma HLS INTERFACE m_axi port=p_act bundle=gmem depth=2097152 offset=slave \
+    num_read_outstanding=16 num_write_outstanding=16 max_read_burst_length=128 max_write_burst_length=128
+#pragma HLS INTERFACE m_axi port=p_wgt bundle=gmem depth=262144  offset=slave \
+    num_read_outstanding=16 num_write_outstanding=16 max_read_burst_length=128 max_write_burst_length=128
+#pragma HLS INTERFACE m_axi port=p_rqt bundle=gmem depth=16384   offset=slave \
+    num_read_outstanding=16 num_write_outstanding=16 max_read_burst_length=128 max_write_burst_length=128
+#pragma HLS INTERFACE m_axi port=p_tbl bundle=gmem depth=16384   offset=slave \
+    num_read_outstanding=16 num_write_outstanding=16 max_read_burst_length=128 max_write_burst_length=128
+// AXI-Lite从接口，PS ARM通过该寄存器控制IP，传递函数入参
+#pragma HLS INTERFACE s_axilite port=p_act    bundle=control
+#pragma HLS INTERFACE s_axilite port=p_wgt    bundle=control
+#pragma HLS INTERFACE s_axilite port=p_rqt    bundle=control
+#pragma HLS INTERFACE s_axilite port=p_tbl    bundle=control
+#pragma HLS INTERFACE s_axilite port=start_op bundle=control
+#pragma HLS INTERFACE s_axilite port=n_ops    bundle=control
+#pragma HLS INTERFACE s_axilite port=return   bundle=control
+
+    /* ---- 防御 1：把 start_op / n_ops 夹进描述符表范围内 ----
+       表只有 HW_N_OPS = 84 条。start_op / n_ops 是留给"逐层调试"的入参
+       （PS 端 Set_start_op() / Set_n_ops()），是人手填的。
+       一旦 start_op + n_ops 越过表尾，下面就会把 yolo_layers[] 后面的
+       .rodata 当成描述符执行 —— oh/ow/ic/oc 全是随机值，轻则跑很久，
+       重则写到 arena 外面，在 DDR 里乱写。 */
+    if (start_op < 0) start_op = 0;
+    if (start_op > HW_N_OPS) start_op = HW_N_OPS;
+    if (n_ops < 0) n_ops = 0;
+    if (start_op + n_ops > HW_N_OPS) n_ops = HW_N_OPS - start_op;
+
+    int32_t d[HW_DESC_WORDS]; // 存放单个算子描述符
+#pragma HLS ARRAY_PARTITION variable=d complete // 数组完全拆分，并行读取描述符字段
+
+    // 循环依次执行算子表内每一个算子
+    for (int op = start_op; op < start_op + n_ops; op++) {
+        // 从DDR读取当前算子完整描述符到数组d
+        for (int i = 0; i < HW_DESC_WORDS; i++) {
+#pragma HLS PIPELINE II=1
+            d[i] = p_tbl[op * HW_DESC_WORDS + i];
+        }
+        // 解析描述符各个字段，拆分偏移、尺寸、通道、卷积参数、算子类型
+        int32_t src_off = d[0], dst_off = d[1], wgt_off = d[2], rq_off = d[3];
+        int32_t add_off = d[4], add_ch_off = d[5];
+        int ih      = d[7]  & 0xFFFF, iw = (d[7]  >> 16) & 0xFFFF;
+        int oh      = d[8]  & 0xFFFF, ow = (d[8]  >> 16) & 0xFFFF;
+        int ic      = d[9]  & 0xFFFF, oc = (d[9]  >> 16) & 0xFFFF;
+        int oc_real = d[10] & 0xFFFF, src_ch_off = (d[10] >> 16) & 0xFFFF;
+        int dst_ch_off = d[11] & 0xFFFF, tile_r = (d[11] >> 16) & 0xFFFF;
+        int tile_c  = d[12] & 0xFFFF;
+        int kk      = (d[12] >> 16) & 0xFF, ss = (d[12] >> 24) & 0xFF;
+        int pad     = d[13] & 0xFF;
+        int act     = (d[13] >> 8)  & 0xFF;
+        int up      = (d[13] >> 16) & 0xFF;
+        int typ     = (d[13] >> 24) & 0xFF;
+
+        /* ---- 防御 2：非法描述符直接跳过，绝不拿去执行 ----
+           下面每条都是"违反了硬件隐含约定"的情况。硬件不会报错，
+           只会安静地算出垃圾、并写进 DDR（可能还写到 arena 外面）。
+           宁可跳过这个算子，也不要带着非法参数跑。 */
+        {
+            int bad = 0;
+            /* c4_index() 只在通道偏移是 4 的倍数时才等价于"从第 c/4 组开始"，
+               否则读出来的 32 位字里装的是隔壁通道，4 个 lane 全部错位 */
+            if (((src_ch_off | dst_ch_off) & 3) != 0)          bad = 1;
+            if (add_off >= 0 && ((add_ch_off & 3) != 0))       bad = 1;
+            if (typ == LT_CONV) {
+                /* 乘法器阵列是 CO 路并行、c4 打包是 CI 通道一组，
+                   所以 ic 必须是 CI 的倍数、oc 必须是 CO 的倍数 */
+                if ((ic % CI) != 0 || (oc % CO) != 0)          bad = 1;
+            } else if (typ == LT_MAXPOOL) {
+                /* pool_op 只实现了 3x3 / stride1 / pad1 这一种（SPPF 专用），
+                   描述符里的 k/s/pad 它根本不看 —— 参数一变就会静默算错 */
+                if (!(kk == 3 && ss == 1 && pad == 1))         bad = 1;
+            } else if (typ == LT_COPY) {
+                if (up != 1 && up != 2)                        bad = 1;
+            } else {
+                bad = 1;                                        /* 未知算子类型 */
+            }
+            if (bad) continue;
+        }
+
+        // 根据算子类型，分发到对应的硬件算子函数
+        if (typ == LT_CONV) {
+            conv_kernel(p_act, p_wgt, p_rqt, src_off, dst_off, wgt_off, rq_off, add_off,
+                        src_ch_off, add_ch_off, dst_ch_off,
+                        ih, iw, ic, oh, ow, oc, oc_real, kk, ss, pad, act,
+                        tile_r, tile_c);
+        } else if (typ == LT_MAXPOOL) {
+            pool_op(p_act, src_off, dst_off, src_ch_off, dst_ch_off, ic,
+                    ih, iw, tile_r, tile_c);
+        } else {
+            // R3改动#3：copy_op 现在需要 tile_r/tile_c 参数（两步法按tile分块，
+            copy_op(p_act, src_off, dst_off, src_ch_off, dst_ch_off, ic,
+                    ih, iw, up, tile_r, tile_c);
+        }
+    }
+}

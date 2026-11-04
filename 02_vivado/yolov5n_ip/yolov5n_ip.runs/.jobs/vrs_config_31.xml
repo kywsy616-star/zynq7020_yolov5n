@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<Runs Version="1" Minor="0">
+	<Run Id="zynq_processing_system7_0_0_synth_1" LaunchDir="D:/02_workspace/02_vitis_projects/yolov5n_speed_prj/02_vivado/yolov5n_ip/yolov5n_ip.runs/zynq_processing_system7_0_0_synth_1" FlowId="Vivado_Synthesis" FromStepId="vivado" ToStepId="vivado"/>
+	<Run Id="zynq_ila_2_0_synth_1" LaunchDir="D:/02_workspace/02_vitis_projects/yolov5n_speed_prj/02_vivado/yolov5n_ip/yolov5n_ip.runs/zynq_ila_2_0_synth_1" FlowId="Vivado_Synthesis" FromStepId="vivado" ToStepId="vivado"/>
+	<Run Id="zynq_c_counter_binary_2_0_synth_1" LaunchDir="D:/02_workspace/02_vitis_projects/yolov5n_speed_prj/02_vivado/yolov5n_ip/yolov5n_ip.runs/zynq_c_counter_binary_2_0_synth_1" FlowId="Vivado_Synthesis" FromStepId="vivado" ToStepId="vivado"/>
+	<Run Id="zynq_proc_sys_reset_0_0_synth_1" LaunchDir="D:/02_workspace/02_vitis_projects/yolov5n_speed_prj/02_vivado/yolov5n_ip/yolov5n_ip.runs/zynq_proc_sys_reset_0_0_synth_1" FlowId="Vivado_Synthesis" FromStepId="vivado" ToStepId="vivado"/>
+	<Run Id="zynq_clk_wiz_hls_150_0_synth_1" LaunchDir="D:/02_workspace/02_vitis_projects/yolov5n_speed_prj/02_vivado/yolov5n_ip/yolov5n_ip.runs/zynq_clk_wiz_hls_150_0_synth_1" FlowId="Vivado_Synthesis" FromStepId="vivado" ToStepId="vivado"/>
+	<Run Id="zynq_axi_cc_hls_ctrl_0_synth_1" LaunchDir="D:/02_workspace/02_vitis_projects/yolov5n_speed_prj/02_vivado/yolov5n_ip/yolov5n_ip.runs/zynq_axi_cc_hls_ctrl_0_synth_1" FlowId="Vivado_Synthesis" FromStepId="vivado" ToStepId="vivado"/>
+	<Run Id="zynq_axi_cc_hls_mem_0_synth_1" LaunchDir="D:/02_workspace/02_vitis_projects/yolov5n_speed_prj/02_vivado/yolov5n_ip/yolov5n_ip.runs/zynq_axi_cc_hls_mem_0_synth_1" FlowId="Vivado_Synthesis" FromStepId="vivado" ToStepId="vivado"/>
+	<Parameters>
+		<Parameter Name="runs.monitorLSFJobs" Val="true" Type="bool"/>
+		<Parameter Name="runs.enableClusterConf" Val="true" Type="bool"/>
+	</Parameters>
+</Runs>
+

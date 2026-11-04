@@ -1,0 +1,158 @@
+{
+  "validation": "PASS; native validate_bd_design returned 0",
+  "validationTime": "2026-10-16 19:57:15 +0800",
+  "hardwareBuildPerformed": false,
+  "fpgaProgrammed": false,
+  "highClockNet": "clk_wiz_hls_150_clk_out1",
+  "highClockHz": 150000000,
+  "lowClockNet": "processing_system7_0_FCLK_CLK0",
+  "lowClockHz": 100000000,
+  "psParametersUnchanged": true,
+  "addressMappingUnchanged": true,
+  "originalExternalPortShapesAndConnectionsPreserved": true,
+  "hlsImplementationHashesUnchanged": true,
+  "addedCells": [
+    "clk_wiz_hls_150",
+    "axi_cc_hls_ctrl",
+    "axi_cc_hls_mem",
+    "hls_reset_zero"
+  ],
+  "interfaceLinks": [
+    {
+      "pins": [
+        "ps7_0_axi_periph/M05_AXI",
+        "axi_cc_hls_ctrl/S_AXI"
+      ],
+      "net": "ps7_0_axi_periph_M05_AXI"
+    },
+    {
+      "pins": [
+        "axi_cc_hls_ctrl/M_AXI",
+        "yolov5n_top_10/s_axi_control"
+      ],
+      "net": "axi_cc_hls_ctrl_M_AXI"
+    },
+    {
+      "pins": [
+        "yolov5n_top_10/m_axi_gmem",
+        "axi_cc_hls_mem/S_AXI"
+      ],
+      "net": "yolov5n_top_10_m_axi_gmem"
+    },
+    {
+      "pins": [
+        "axi_cc_hls_mem/M_AXI",
+        "axi_smc_acc/S00_AXI"
+      ],
+      "net": "axi_cc_hls_mem_M_AXI"
+    },
+    {
+      "pins": [
+        "axi_smc_acc/M00_AXI",
+        "processing_system7_0/S_AXI_HP1"
+      ],
+      "net": "axi_smc_acc_M00_AXI"
+    }
+  ],
+  "clockPins": [
+    {
+      "pin": "processing_system7_0/FCLK_CLK0",
+      "net": "/processing_system7_0_FCLK_CLK0",
+      "hz": 100000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "processing_system7_0/FCLK_CLK1",
+      "net": "",
+      "hz": 142857132,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK1"
+    },
+    {
+      "pin": "clk_wiz_hls_150/clk_in1",
+      "net": "/processing_system7_0_FCLK_CLK0",
+      "hz": 100000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "clk_wiz_hls_150/clk_out1",
+      "net": "/clk_wiz_hls_150_clk_out1",
+      "hz": 150000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "yolov5n_top_10/ap_clk",
+      "net": "/clk_wiz_hls_150_clk_out1",
+      "hz": 150000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "ila_3/clk",
+      "net": "/clk_wiz_hls_150_clk_out1",
+      "hz": 150000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "c_counter_binary_3/CLK",
+      "net": "/clk_wiz_hls_150_clk_out1",
+      "hz": 150000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "proc_sys_reset_0/slowest_sync_clk",
+      "net": "/clk_wiz_hls_150_clk_out1",
+      "hz": 150000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "axi_cc_hls_ctrl/s_axi_aclk",
+      "net": "/processing_system7_0_FCLK_CLK0",
+      "hz": 100000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "axi_cc_hls_ctrl/m_axi_aclk",
+      "net": "/clk_wiz_hls_150_clk_out1",
+      "hz": 150000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "axi_cc_hls_mem/s_axi_aclk",
+      "net": "/clk_wiz_hls_150_clk_out1",
+      "hz": 150000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "axi_cc_hls_mem/m_axi_aclk",
+      "net": "/processing_system7_0_FCLK_CLK0",
+      "hz": 100000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "ps7_0_axi_periph/M05_ACLK",
+      "net": "/processing_system7_0_FCLK_CLK0",
+      "hz": null,
+      "domain": ""
+    },
+    {
+      "pin": "axi_smc_acc/aclk",
+      "net": "/processing_system7_0_FCLK_CLK0",
+      "hz": 100000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    },
+    {
+      "pin": "processing_system7_0/S_AXI_HP1_ACLK",
+      "net": "/processing_system7_0_FCLK_CLK0",
+      "hz": 100000000,
+      "domain": "zynq_processing_system7_0_0_FCLK_CLK0"
+    }
+  ],
+  "warnings": [
+    "WARNING: [SMARTCONNECT-2] Port S00_AXI of /axi_smc_acc is connected to an infrastructure IP (/axi_cc_hls_mem).  It is recommended to attach AXI SmartConnect directly to endpoint IPs to avoid mismatches or other issues during validation.  If mismatches occur, manually assign values for AXI Interface properties of /axi_cc_hls_mem.",
+    "WARNING: [BD 41-927] Following properties on pin /yolov5n_top_10/ap_clk have been updated from connected ip, but BD cell '/yolov5n_top_10' does not accept parameter changes, so they may not be synchronized with cell properties:"
+  ],
+  "notes": [
+    "BD validation is not routed timing closure or board measurement.",
+    "FCLK1 remains unused; its actual 142857132 Hz is not the accelerator clock.",
+    "Validation appended inferred metadata to some existing external ports."
+  ]
+}

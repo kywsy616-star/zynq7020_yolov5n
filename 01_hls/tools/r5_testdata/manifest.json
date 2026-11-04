@@ -1,0 +1,17 @@
+{
+  "weights.bin": {
+    "source": "weights_speed_blob.c",
+    "bytes": 724544,
+    "sha256": "f9162e69ec0dedf7e2bf95f1f17c01fd078ca1230d90e627b22f23a4ce4d8f82"
+  },
+  "rqt.bin": {
+    "source": "rqt_speed_blob.c",
+    "bytes": 36096,
+    "sha256": "05ce511f695e6b1e8b01ee867b6d0a2b29cb53dec5ed95286f356acad063c81b"
+  },
+  "layers.bin": {
+    "source": "yolov5n_speed_layers.h",
+    "bytes": 5376,
+    "sha256": "2c0c414eff542a3fe6d49a679c7ec10f44fd2cb093b7197cd98bacb874d0bf4c"
+  }
+}

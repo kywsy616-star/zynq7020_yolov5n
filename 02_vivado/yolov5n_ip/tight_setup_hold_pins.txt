@@ -1,0 +1,29 @@
++--------------------------+--------------------------+----------------------------------------------------------------------------------------------------------+
+|       Launch Clock       |      Capture Clock       |                                                 Pin                                                      |
++--------------------------+--------------------------+----------------------------------------------------------------------------------------------------------+
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_b/data_rise_s_reg[3]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_rise_s_reg[4]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_fall_s_reg[4]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_rise_s_reg[2]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_b/data_fall_s_reg[3]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_rise_s_reg[3]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_rise_s_reg[2]/D|
+|   axi_dynclk_0_PXL_CLK_O |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_rise_s_reg[4]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_fall_s_reg[3]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_rise_s_reg[0]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_rise_s_reg[1]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_fall_s_reg[1]/D|
+|   axi_dynclk_0_PXL_CLK_O |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_rise_s_reg[3]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_fall_s_reg[0]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_b/data_fall_s_reg[1]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_rise_s_reg[1]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_b/data_rise_s_reg[1]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_b/data_fall_s_reg[0]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_fall_s_reg[3]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_rise_s_reg[0]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_b/data_fall_s_reg[2]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_fall_s_reg[1]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_b/data_rise_s_reg[4]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_r/data_fall_s_reg[2]/D|
+|                        I |                        I |zynq_i/hdmi_transmitter_0/inst/hdmi_transmitter_v1_0_S00_AXI_inst/hdmi_transmitter_inst/par_to_ser_g/data_fall_s_reg[0]/D|
++--------------------------+--------------------------+----------------------------------------------------------------------------------------------------------+
